@@ -1,0 +1,32 @@
+name: Mark stale issues and pull requests
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Täglich um Mitternacht
+  workflow_dispatch:
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    
+    steps:
+    - uses: actions/stale@v9
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        days-before-stale: 60
+        days-before-close: 14
+        stale-issue-message: |
+          Dieses Issue wurde automatisch als inaktiv markiert, da es in den letzten 60 Tagen keine Aktivität gab.
+          Es wird in 14 Tagen geschlossen, wenn keine weitere Aktivität erfolgt.
+          Vielen Dank für Ihre Beiträge!
+        stale-pr-message: |
+          Dieser Pull Request wurde automatisch als inaktiv markiert, da er in den letzten 60 Tagen keine Aktivität aufwies.
+          Er wird in 14 Tagen geschlossen, wenn keine weitere Aktivität erfolgt.
+          Vielen Dank für Ihre Beiträge!
+        stale-issue-label: 'stale'
+        stale-pr-label: 'stale'
+        exempt-issue-labels: 'pinned,security,enhancement'
+        exempt-pr-labels: 'pinned,security'

@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: [ master, cursor/** ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64 nsis
+    
+    - name: Build Debug Version (32-bit and 64-bit)
+      run: |
+        chmod +x build.sh
+        ./build.sh
+    
+    - name: Build Release Version
+      run: |
+        chmod +x build.sh
+        ./build.sh release
+    
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: altdrag-build-${{ github.sha }}
+        path: |
+          bin/*.exe
+          bin/*.dll
+          bin/*.nsi
+          bin/sha256sum.txt
+        retention-days: 30
+    
+    - name: Upload Installer
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: altdrag-installer-${{ github.sha }}
+        path: |
+          *.exe
+        retention-days: 30

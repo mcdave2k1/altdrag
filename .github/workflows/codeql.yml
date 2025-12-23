@@ -1,0 +1,59 @@
+name: "CodeQL"
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  schedule:
+    - cron: '0 0 * * 1'  # Jeden Montag um Mitternacht
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'cpp' ]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${{ matrix.language }}
+        queries: security-and-quality
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64
+
+    - name: Build for CodeQL
+      run: |
+        mkdir -p bin
+        i686-w64-mingw32-windres -o bin/altdrag.o include/altdrag.rc
+        i686-w64-mingw32-windres -o bin/hooks.o include/hooks.rc
+        x86_64-w64-mingw32-windres -o bin/hookwindows_x64.o include/hookwindows_x64.rc
+        x86_64-w64-mingw32-windres -o bin/hooks_x64.o include/hooks.rc
+        
+        i686-w64-mingw32-gcc -c altdrag.c -DDEBUG
+        i686-w64-mingw32-gcc -c hooks.c -DDEBUG
+        i686-w64-mingw32-gcc -c hookwindows_x64.c -DDEBUG
+        
+        x86_64-w64-mingw32-gcc -c altdrag.c -DDEBUG
+        x86_64-w64-mingw32-gcc -c hooks.c -DDEBUG
+        x86_64-w64-mingw32-gcc -c hookwindows_x64.c -DDEBUG
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:${{matrix.language}}"

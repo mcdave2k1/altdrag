@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for release'
+        required: true
+        default: 'v1.0.0'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64 nsis
+    
+    - name: Build Release Version
+      run: |
+        chmod +x build.sh
+        ./build.sh release
+    
+    - name: Get Tag Name
+      id: tag_name
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+        else
+          echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.tag_name.outputs.TAG_NAME }}
+        name: Release ${{ steps.tag_name.outputs.TAG_NAME }}
+        draft: false
+        prerelease: false
+        files: |
+          bin/AltDrag.exe
+          bin/hooks.dll
+          bin/HookWindows_x64.exe
+          bin/hooks_x64.dll
+          bin/sha256sum.txt
+          *.exe
+        body: |
+          ## AltDrag Release ${{ steps.tag_name.outputs.TAG_NAME }}
+          
+          ### Downloads
+          - **Installer**: AltDrag-Setup.exe (empfohlen)
+          - **Portable 32-bit**: AltDrag.exe + hooks.dll
+          - **Portable 64-bit**: HookWindows_x64.exe + hooks_x64.dll
+          
+          ### Checksums
+          SHA256-Prüfsummen sind in der Datei `sha256sum.txt` enthalten.
+          
+          ### Installation
+          1. Führen Sie den Installer aus, oder
+          2. Entpacken Sie die portable Version und führen Sie AltDrag.exe aus
+          
+          Weitere Informationen finden Sie auf der [Projekt-Website](https://stefansundin.github.io/altdrag/)
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

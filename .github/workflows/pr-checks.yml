@@ -1,0 +1,108 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [ master ]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  build-check:
+    name: Build Verification
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64 nsis
+    
+    - name: Verify Debug Build
+      run: |
+        chmod +x build.sh
+        ./build.sh
+        
+    - name: Verify Release Build
+      run: |
+        ./build.sh release
+    
+    - name: Check Build Outputs
+      run: |
+        echo "Checking if all required files were built..."
+        test -f bin/AltDrag.exe || { echo "ERROR: bin/AltDrag.exe not found"; exit 1; }
+        test -f bin/hooks.dll || { echo "ERROR: bin/hooks.dll not found"; exit 1; }
+        test -f bin/HookWindows_x64.exe || { echo "ERROR: bin/HookWindows_x64.exe not found"; exit 1; }
+        test -f bin/hooks_x64.dll || { echo "ERROR: bin/hooks_x64.dll not found"; exit 1; }
+        test -f bin/sha256sum.txt || { echo "ERROR: bin/sha256sum.txt not found"; exit 1; }
+        echo "✓ All required files were built successfully"
+    
+    - name: Verify Checksums
+      run: |
+        cd bin
+        sha256sum -c sha256sum.txt || { echo "ERROR: Checksum verification failed"; exit 1; }
+        echo "✓ Checksums verified successfully"
+    
+    - name: Build Summary
+      if: always()
+      run: |
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ -d bin ]; then
+          echo "### Built Files:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          ls -lh bin/ >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f bin/sha256sum.txt ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### SHA256 Checksums:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            cat bin/sha256sum.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+
+  file-changes:
+    name: File Changes Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Get Changed Files
+      id: changed-files
+      uses: tj-actions/changed-files@v41
+      
+    - name: List Changed Files
+      run: |
+        echo "## Changed Files" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Modified Files:" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
+          echo "- $file" >> $GITHUB_STEP_SUMMARY
+        done
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        
+        echo "Total files changed: ${{ steps.changed-files.outputs.all_changed_files_count }}" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Check for Critical Files
+      run: |
+        echo "Checking for changes in critical files..."
+        
+        if echo "${{ steps.changed-files.outputs.all_changed_files }}" | grep -q "build\.sh\|build\.bat"; then
+          echo "⚠️ Build scripts were modified" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if echo "${{ steps.changed-files.outputs.all_changed_files }}" | grep -q "\.c$\|\.h$"; then
+          echo "📝 Source code files were modified" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if echo "${{ steps.changed-files.outputs.all_changed_files }}" | grep -q "localization/"; then
+          echo "🌐 Localization files were modified" >> $GITHUB_STEP_SUMMARY
+        fi

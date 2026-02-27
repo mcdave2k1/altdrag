@@ -52,7 +52,7 @@ HINSTANCE hinstDLL = NULL;
 HHOOK keyhook = NULL;
 HHOOK msghook = NULL;
 BOOL x64 = FALSE;
-int vista = 0;
+int vista = 1;
 int elevated = 0;
 
 // Include stuff
@@ -112,15 +112,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInstance, char *szCmdLine, in
     }
   }
 
-  // Check if elevated if in >= Vista
-  OSVERSIONINFO vi = { sizeof(OSVERSIONINFO) };
-  GetVersionEx(&vi);
-  vista = (vi.dwMajorVersion >= 6);
-  if (vista) {
+  // Check if elevated (Vista is minimum supported version)
+  {
     HANDLE token;
     TOKEN_ELEVATION elevation;
     DWORD len;
-    if (OpenProcessToken(GetCurrentProcess(),TOKEN_READ,&token) && GetTokenInformation(token,TokenElevation,&elevation,sizeof(elevation),&len)) {
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_READ, &token)
+     && GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &len)) {
       elevated = elevation.TokenIsElevated;
     }
   }

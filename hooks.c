@@ -251,10 +251,34 @@ BOOL IsCloaked(HWND hwnd) {
   return FALSE;
 }
 
+// DWMWA_EXTENDED_FRAME_BOUNDS is always in physical pixels, while GetWindowRect is DPI virtualized
+// for threads that are not per-monitor DPI aware (e.g. other applications hooked with HookWindows).
+// The DWM bounds are only used when both use the same coordinate space.
+// The required functions exist on Windows 10 1607 and newer, which is also where the invisible borders matter.
+typedef HANDLE (WINAPI *GETTHREADDPIAWARENESSCONTEXT)(void);
+typedef int (WINAPI *GETAWARENESSFROMDPIAWARENESSCONTEXT)(HANDLE);
+BOOL IsPerMonitorDpiAware(void) {
+  static GETTHREADDPIAWARENESSCONTEXT getcontext = NULL;
+  static GETAWARENESSFROMDPIAWARENESSCONTEXT getawareness = NULL;
+  static int loaded = 0;
+  if (!loaded) {
+    loaded = 1;
+    HMODULE user32 = GetModuleHandle(L"user32.dll");
+    if (user32) {
+      getcontext = (GETTHREADDPIAWARENESSCONTEXT)GetProcAddress(user32, "GetThreadDpiAwarenessContext");
+      getawareness = (GETAWARENESSFROMDPIAWARENESSCONTEXT)GetProcAddress(user32, "GetAwarenessFromDpiAwarenessContext");
+    }
+  }
+  if (!getcontext || !getawareness) {
+    return FALSE;
+  }
+  return (getawareness(getcontext()) == 2); // DPI_AWARENESS_PER_MONITOR_AWARE
+}
+
 // Get the visible rect of a window (excluding the invisible resize borders of Windows 10/11)
 BOOL GetVisibleWindowRect(HWND hwnd, RECT *rect) {
   DWMGETWINDOWATTRIBUTE func = MyDwmGetWindowAttribute();
-  if (func && func(hwnd,MY_DWMWA_EXTENDED_FRAME_BOUNDS,rect,sizeof(RECT)) == S_OK
+  if (func && IsPerMonitorDpiAware() && func(hwnd,MY_DWMWA_EXTENDED_FRAME_BOUNDS,rect,sizeof(RECT)) == S_OK
    && rect->right > rect->left && rect->bottom > rect->top) {
     return TRUE;
   }
@@ -636,6 +660,36 @@ void ResizeSnap(int *posx, int *posy, int *wndwidth, int *wndheight) {
   }
 }
 
+// Snap using the visible frame of hwnd (Windows 10/11 have invisible borders around windows)
+// Positions and sizes passed in and out are the outer window bounds
+void MoveSnapVisible(HWND hwnd, int *posx, int *posy, int wndwidth, int wndheight) {
+  RECT b = {0,0,0,0};
+  if (!(GetWindowLongPtr(hwnd,GWL_STYLE)&WS_CHILD)) {
+    GetInvisibleBorders(hwnd, &b);
+  }
+  *posx += b.left;
+  *posy += b.top;
+  MoveSnap(posx, posy, wndwidth-b.left-b.right, wndheight-b.top-b.bottom);
+  *posx -= b.left;
+  *posy -= b.top;
+}
+
+void ResizeSnapVisible(HWND hwnd, int *posx, int *posy, int *wndwidth, int *wndheight) {
+  RECT b = {0,0,0,0};
+  if (!(GetWindowLongPtr(hwnd,GWL_STYLE)&WS_CHILD)) {
+    GetInvisibleBorders(hwnd, &b);
+  }
+  *posx += b.left;
+  *posy += b.top;
+  *wndwidth -= b.left+b.right;
+  *wndheight -= b.top+b.bottom;
+  ResizeSnap(posx, posy, wndwidth, wndheight);
+  *posx -= b.left;
+  *posy -= b.top;
+  *wndwidth += b.left+b.right;
+  *wndheight += b.top+b.bottom;
+}
+
 #ifdef _WIN64
 
 // x64 keyhook needs only to check when the shift key is depressed
@@ -788,6 +842,17 @@ void MouseMove() {
 
     // Aero Snap
     if (sharedsettings.Aero) {
+      // The Aero sizes below are for the visible frame (Windows 10/11 have invisible borders around windows),
+      // so convert the tracking limits to visible-frame sizes too, and restore them afterwards
+      RECT b = {0,0,0,0};
+      if (!state.mdiclient) {
+        GetInvisibleBorders(state.hwnd, &b);
+      }
+      __typeof__(state.mmi) mmi_outer = state.mmi;
+      state.mmi.ptMaxTrackSize.x = max(state.mmi.ptMaxTrackSize.x-b.left-b.right, 0);
+      state.mmi.ptMaxTrackSize.y = max(state.mmi.ptMaxTrackSize.y-b.top-b.bottom, 0);
+      state.mmi.ptMinTrackSize.x = max(state.mmi.ptMinTrackSize.x-b.left-b.right, 0);
+      state.mmi.ptMinTrackSize.y = max(state.mmi.ptMinTrackSize.y-b.top-b.bottom, 0);
       // Restore window?
       if (maximized
        && ((pt.y >= mon.top+AERO_THRESHOLD)
@@ -850,6 +915,7 @@ void MouseMove() {
           wndpl.showCmd = SW_MAXIMIZE;
           SetWindowPlacement(state.hwnd, &wndpl);
         }
+        state.mmi = mmi_outer;
         return;
       }
       else if (pt.y < mon.top+2*AERO_THRESHOLD) {
@@ -891,20 +957,19 @@ void MouseMove() {
         wndheight = state.origin.height;
       }
 
+      // Restore the original tracking limits
+      state.mmi = mmi_outer;
+
       // Aero-move the window?
       if (state.wndentry->restore) {
         state.wndentry->width = state.origin.width;
         state.wndentry->height = state.origin.height;
 
         // Compensate for invisible borders (Windows 10/11), so that the visible frame lines up with the monitor edges
-        if (!state.mdiclient) {
-          RECT b;
-          GetInvisibleBorders(state.hwnd, &b);
-          posx -= b.left;
-          posy -= b.top;
-          wndwidth += b.left+b.right;
-          wndheight += b.top+b.bottom;
-        }
+        posx -= b.left;
+        posy -= b.top;
+        wndwidth += b.left+b.right;
+        wndheight += b.top+b.bottom;
 
         // Move
         MoveWindow(state.hwnd, posx, posy, wndwidth, wndheight, TRUE);
@@ -936,16 +1001,7 @@ void MouseMove() {
 
     // Check if the window will snap anywhere
     if (sharedstate.snap) {
-      // Snap using the visible frame (Windows 10/11 have invisible borders around windows)
-      RECT b = {0,0,0,0};
-      if (!state.mdiclient) {
-        GetInvisibleBorders(state.hwnd, &b);
-      }
-      posx += b.left;
-      posy += b.top;
-      MoveSnap(&posx, &posy, wndwidth-b.left-b.right, wndheight-b.top-b.bottom);
-      posx -= b.left;
-      posy -= b.top;
+      MoveSnapVisible(state.hwnd, &posx, &posy, wndwidth, wndheight);
     }
   }
   else if (sharedstate.action == ACTION_RESIZE) {
@@ -995,20 +1051,7 @@ void MouseMove() {
 
       // Check if the window will snap anywhere
       if (sharedstate.snap) {
-        // Snap using the visible frame (Windows 10/11 have invisible borders around windows)
-        RECT b = {0,0,0,0};
-        if (!state.mdiclient) {
-          GetInvisibleBorders(state.hwnd, &b);
-        }
-        posx += b.left;
-        posy += b.top;
-        wndwidth -= b.left+b.right;
-        wndheight -= b.top+b.bottom;
-        ResizeSnap(&posx, &posy, &wndwidth, &wndheight);
-        posx -= b.left;
-        posy -= b.top;
-        wndwidth += b.left+b.right;
-        wndheight += b.top+b.bottom;
+        ResizeSnapVisible(state.hwnd, &posx, &posy, &wndwidth, &wndheight);
       }
     }
   }
@@ -2132,10 +2175,10 @@ __declspec(dllexport) LRESULT CALLBACK CustomWndProc(HWND hwnd, UINT msg, WPARAM
   else if (msg == WM_WINDOWPOSCHANGING && sharedstate.snap && !sharedstate.action) {
     WINDOWPOS *wndpos = (WINDOWPOS*)lParam;
     if (msgaction == ACTION_MOVE && !(wndpos->flags&SWP_NOMOVE)) {
-      MoveSnap(&wndpos->x, &wndpos->y, wndpos->cx, wndpos->cy);
+      MoveSnapVisible(hwnd, &wndpos->x, &wndpos->y, wndpos->cx, wndpos->cy);
     }
     else if (msgaction == ACTION_RESIZE && !(wndpos->flags&SWP_NOSIZE)) {
-      ResizeSnap(&wndpos->x, &wndpos->y, &wndpos->cx, &wndpos->cy);
+      ResizeSnapVisible(hwnd, &wndpos->x, &wndpos->y, &wndpos->cx, &wndpos->cy);
     }
   }
   else if (msg == WM_EXITSIZEMOVE || msg == WM_DESTROY) {

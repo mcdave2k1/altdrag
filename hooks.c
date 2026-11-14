@@ -223,6 +223,61 @@ int blacklisted(HWND hwnd, struct blacklist *list) {
 }
 
 // Enumerate
+// DWM helpers (Windows Vista and newer, important on Windows 10/11)
+// dwmapi.dll is loaded dynamically so that the program still starts on systems without it
+#define MY_DWMWA_CLOAKED 14
+#define MY_DWMWA_EXTENDED_FRAME_BOUNDS 9
+typedef HRESULT (WINAPI *DWMGETWINDOWATTRIBUTE)(HWND, DWORD, PVOID, DWORD);
+DWMGETWINDOWATTRIBUTE MyDwmGetWindowAttribute(void) {
+  static DWMGETWINDOWATTRIBUTE func = NULL;
+  static int loaded = 0;
+  if (!loaded) {
+    loaded = 1;
+    HMODULE dwmapi = LoadLibrary(L"dwmapi.dll");
+    if (dwmapi) {
+      func = (DWMGETWINDOWATTRIBUTE)GetProcAddress(dwmapi, "DwmGetWindowAttribute");
+    }
+  }
+  return func;
+}
+
+// Returns TRUE if the window is cloaked (e.g. on another virtual desktop or a suspended UWP app)
+BOOL IsCloaked(HWND hwnd) {
+  DWMGETWINDOWATTRIBUTE func = MyDwmGetWindowAttribute();
+  DWORD cloaked = 0;
+  if (func && func(hwnd,MY_DWMWA_CLOAKED,&cloaked,sizeof(cloaked)) == S_OK) {
+    return (cloaked != 0);
+  }
+  return FALSE;
+}
+
+// Get the visible rect of a window (excluding the invisible resize borders of Windows 10/11)
+BOOL GetVisibleWindowRect(HWND hwnd, RECT *rect) {
+  DWMGETWINDOWATTRIBUTE func = MyDwmGetWindowAttribute();
+  if (func && func(hwnd,MY_DWMWA_EXTENDED_FRAME_BOUNDS,rect,sizeof(RECT)) == S_OK
+   && rect->right > rect->left && rect->bottom > rect->top) {
+    return TRUE;
+  }
+  return GetWindowRect(hwnd, rect);
+}
+
+// Get the size of the invisible borders around a window (all values >= 0)
+void GetInvisibleBorders(HWND hwnd, RECT *borders) {
+  *borders = (RECT) {0,0,0,0};
+  RECT wnd, vis;
+  if (GetWindowRect(hwnd,&wnd) == 0 || GetVisibleWindowRect(hwnd,&vis) == 0) {
+    return;
+  }
+  borders->left   = max(vis.left-wnd.left, 0);
+  borders->top    = max(vis.top-wnd.top, 0);
+  borders->right  = max(wnd.right-vis.right, 0);
+  borders->bottom = max(wnd.bottom-vis.bottom, 0);
+  // Sanity check, the borders should never be large
+  if (borders->left > 50 || borders->top > 50 || borders->right > 50 || borders->bottom > 50) {
+    *borders = (RECT) {0,0,0,0};
+  }
+}
+
 int monitors_alloc = 0;
 BOOL CALLBACK EnumMonitorsProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
   // Make sure we have enough space allocated
@@ -249,7 +304,8 @@ BOOL CALLBACK EnumWindowsProc(HWND window, LPARAM lParam) {
   if (window != state.hwnd && window != progman
    && IsWindowVisible(window) && !IsIconic(window)
    && (((style=GetWindowLongPtr(window,GWL_STYLE))&WS_CAPTION) == WS_CAPTION || blacklisted(window,&settings.Snaplist))
-   && GetWindowRect(window,&wnd) != 0
+   && !IsCloaked(window)
+   && GetVisibleWindowRect(window,&wnd) != 0
   ) {
     // Maximized?
     if (IsZoomed(window)) {
@@ -300,6 +356,7 @@ BOOL CALLBACK EnumAltTabWindows(HWND window, LPARAM lParam) {
   // Only store window if it's visible, not minimized to taskbar and on the same monitor as the cursor
   if (IsWindowVisible(window) && !IsIconic(window)
    && (GetWindowLongPtr(window,GWL_STYLE)&WS_CAPTION) == WS_CAPTION
+   && !IsCloaked(window)
    && state.origin.monitor == MonitorFromWindow(window,MONITOR_DEFAULTTONULL)
   ) {
     hwnds[numhwnds++] = window;
@@ -360,7 +417,7 @@ void Enum() {
   // Enumerate windows
   HWND taskbar = FindWindow(L"Shell_TrayWnd", NULL);
   RECT wnd;
-  if (taskbar != NULL && GetWindowRect(taskbar,&wnd) != 0) {
+  if (taskbar != NULL && GetVisibleWindowRect(taskbar,&wnd) != 0) {
     wnds[numwnds++] = wnd;
   }
   if (sharedstate.snap >= 2) {
@@ -839,6 +896,16 @@ void MouseMove() {
         state.wndentry->width = state.origin.width;
         state.wndentry->height = state.origin.height;
 
+        // Compensate for invisible borders (Windows 10/11), so that the visible frame lines up with the monitor edges
+        if (!state.mdiclient) {
+          RECT b;
+          GetInvisibleBorders(state.hwnd, &b);
+          posx -= b.left;
+          posy -= b.top;
+          wndwidth += b.left+b.right;
+          wndheight += b.top+b.bottom;
+        }
+
         // Move
         MoveWindow(state.hwnd, posx, posy, wndwidth, wndheight, TRUE);
 
@@ -869,7 +936,16 @@ void MouseMove() {
 
     // Check if the window will snap anywhere
     if (sharedstate.snap) {
-      MoveSnap(&posx, &posy, wndwidth, wndheight);
+      // Snap using the visible frame (Windows 10/11 have invisible borders around windows)
+      RECT b = {0,0,0,0};
+      if (!state.mdiclient) {
+        GetInvisibleBorders(state.hwnd, &b);
+      }
+      posx += b.left;
+      posy += b.top;
+      MoveSnap(&posx, &posy, wndwidth-b.left-b.right, wndheight-b.top-b.bottom);
+      posx -= b.left;
+      posy -= b.top;
     }
   }
   else if (sharedstate.action == ACTION_RESIZE) {
@@ -919,7 +995,20 @@ void MouseMove() {
 
       // Check if the window will snap anywhere
       if (sharedstate.snap) {
+        // Snap using the visible frame (Windows 10/11 have invisible borders around windows)
+        RECT b = {0,0,0,0};
+        if (!state.mdiclient) {
+          GetInvisibleBorders(state.hwnd, &b);
+        }
+        posx += b.left;
+        posy += b.top;
+        wndwidth -= b.left+b.right;
+        wndheight -= b.top+b.bottom;
         ResizeSnap(&posx, &posy, &wndwidth, &wndheight);
+        posx -= b.left;
+        posy -= b.top;
+        wndwidth += b.left+b.right;
+        wndheight += b.top+b.bottom;
       }
     }
   }
